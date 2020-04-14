@@ -24,6 +24,81 @@ Step 1: Perform a meta-analysis of pitch variability from previous studies of vo
 - You should calculate Effect size (cohen's d) and Standard Error (uncertainty in the Cohen's d) per each study, using escalc() from the metafor package (also check the livecoding intro)
 - N.B. we're only interested in getting a meta-analytic effect size for the meta-analytic prior (and not e.g. all the stuff on publication bias). See a brms tutorial here: https://vuorre.netlify.com/post/2016/09/29/meta-analysis-is-a-special-case-of-bayesian-multilevel-modeling/ The formula is EffectSize | se(StandardError) ~ 1 + (1 | Paper). Don't forget prior definition, model checking, etc.
 - Write down the results of the meta-analysis in terms of a prior for step 2.
+```{r}
+library(pacman)
+p_load(tidyverse, ggplot2,brms, metafor)
+meta_data <- read_delim("Ass4_MetaAnalysisData.tsv", delim = "\t")
+
+meta_data <- meta_data[!is.na(meta_data$Paper), ]
+
+meta_data <- meta_data %>%  
+  mutate(PitchVariabilityASD_Mean = as.numeric(PitchVariabilityASD_Mean),
+         PitchVariabilityTD_Mean = as.numeric(PitchVariabilityTD_Mean),
+         PitchVariabilityASD_SD = as.numeric(PitchVariabilityASD_SD),
+         PitchVariabilityTD_SD = as.numeric(PitchVariabilityTD_SD))
+
+meta_data<- escalc(measure = "SMD",
+       n1i = TD_N,
+       n2i = ASD_N,
+       m1i = PitchVariabilityTD_Mean,
+       m2i = PitchVariabilityASD_Mean,
+       sd1i = PitchVariabilityTD_SD,
+       sd2i = PitchVariabilityASD_SD,
+       data = meta_data,
+       slab = Paper)
+
+meta_data <- meta_data %>% 
+  mutate(
+    StandardError = sqrt(vi)
+  ) %>% 
+  rename(
+    EffectSize = yi
+  )
+
+summary(meta_data$EffectSize)
+
+###MODELING
+meta_model <- bf(
+  EffectSize | se(StandardError) ~ 1 + (1 | Population)
+)
+get_prior(meta_model, data = meta_data)
+meta_priors <- c(
+  prior(normal(0, .5), class =Intercept),
+  prior(normal(0,.2), class = sd)
+)
+
+#Prior predictive checks
+brm_out_only <- brm(
+  meta_model, 
+  prior = meta_priors,
+  data = meta_data, 
+  cores = 4,
+  sample_prior = "only"
+)
+
+pp_check(brm_out_only, nsamples = 100)
+
+#posterior predictive checks
+brm_out_only <- brm(
+  EffectSize | se(StandardError) ~ 1 + (1 | Population), 
+  prior = set_prior("uniform(0, 1)", class = "sd"),
+  data = meta_data, 
+  cores = 4,
+  sample_prior = T
+)
+
+pp_check(brm_out, nsamples = 100)
+
+summary(brm_out)
+
+###Priors for next model
+meta_mean <- fixef(brm_out)[[1]]
+meta_se <- fixef(brm_out)[[2]]
+
+meta_heterogeneity <- 0.39
+
+###We just did a meta-analysis of 41 studies about pitch-variability in ASD and TD participants, from which we extract a mean effect size and the standard error, to be used as informative priors for future studies. Similarly, we extracted a measure of heterogeneity of effect size between populations.
+```
 
 Step 2: Analyse pitch variability in ASD in two new studies for which you have access to all the trials (not just study level estimates)
 - the data is available as Ass4_data.csv. Notice there are 2 studies (language us, and language dk), multiple trials per participant, and a few different ways to measure pitch variability (if in doubt, focus on pitch IQR, interquartile range of the log of fundamental frequency)
