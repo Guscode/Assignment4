@@ -67,6 +67,7 @@ meta_priors <- c(
   prior(normal(0,.2), class = sd)
 )
 
+
 #Prior predictive checks
 brm_out_only <- brm(
   meta_model, 
@@ -79,9 +80,9 @@ brm_out_only <- brm(
 pp_check(brm_out_only, nsamples = 100)
 
 #posterior predictive checks
-brm_out_only <- brm(
-  EffectSize | se(StandardError) ~ 1 + (1 | Population), 
-  prior = set_prior("uniform(0, 1)", class = "sd"),
+brm_out <- brm(
+  meta_model, 
+  prior = meta_priors,
   data = meta_data, 
   cores = 4,
   sample_prior = T
@@ -95,7 +96,7 @@ summary(brm_out)
 meta_mean <- fixef(brm_out)[[1]]
 meta_se <- fixef(brm_out)[[2]]
 
-meta_heterogeneity <- 0.39
+meta_heterogeneity <- 0.28
 
 ###We just did a meta-analysis of 41 studies about pitch-variability in ASD and TD participants, from which we extract a mean effect size and the standard error, to be used as informative priors for future studies. Similarly, we extracted a measure of heterogeneity of effect size between populations.
 ```
@@ -104,6 +105,57 @@ Step 2: Analyse pitch variability in ASD in two new studies for which you have a
 - the data is available as Ass4_data.csv. Notice there are 2 studies (language us, and language dk), multiple trials per participant, and a few different ways to measure pitch variability (if in doubt, focus on pitch IQR, interquartile range of the log of fundamental frequency)
 - Also, let's standardize the data, so that they are compatible with our meta-analytic prior (Cohen's d is measured in SDs).
 - Is there any structure in the dataset that we should account for with random/varying effects? How would you implement that? Or, if you don't know how to do bayesian random/varying effects or don't want to bother, is there anything we would need to simplify in the dataset?
+```{r}
+pitch_data <- read_csv("Ass4_data.csv")
+
+summary(as.factor(pitch_data$Language))
+
+pitch_data <- pitch_data %>% 
+  mutate(PitchVariability = scale(Pitch_IQR))
+
+###Checking difference in language
+pitch_data %>% 
+  group_by(Language, Diagnosis) %>% 
+  summarise( iqr_diff = mean(PitchVariability, na.rm=T), n = n())
+#include as fixed effect
+
+
+pitch_model <- bf(
+  PitchVariability ~ 0 + Diagnosis + Language + (1|ID)
+)
+
+get_prior(pitch_model, data = pitch_data)
+summary(as.factor(pitch_data$ID))
+pitch_priors <- c(
+  prior(normal(-0.43, 0.09), class = b),
+  prior(normal(0,.5), class=sigma)
+)
+
+summary(pitch_data$PitchVariability)
+
+pitch_priorcheck <- brm(
+  pitch_model, 
+  prior = pitch_priors,
+  data = pitch_data, 
+  cores = 4,
+  sample_prior = "only"
+)
+
+pp_check(pitch_priorcheck, nsamples=100)
+?pp_check
+###Posterior check
+pitch_brm <- brm(
+  pitch_model, 
+  prior = pitch_priors,
+  data = pitch_data, 
+  cores = 4,
+  sample_prior = T
+)
+
+pp_check(pitch_brm, nsamples=100)
+
+summary(pitch_brm)
+```
 
 Step 3: Build a regression model predicting Pitch variability from Diagnosis.
 - how is the outcome distributed? (likelihood function). NB. given we are standardizing, and the meta-analysis is on that scale, gaussian is not a bad assumption. Lognormal would require us to convert the prior to that scale.
