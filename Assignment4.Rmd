@@ -26,7 +26,7 @@ Step 1: Perform a meta-analysis of pitch variability from previous studies of vo
 - Write down the results of the meta-analysis in terms of a prior for step 2.
 ```{r}
 library(pacman)
-p_load(tidyverse, ggplot2,brms, metafor)
+p_load(tidyverse, ggplot2,brms, metafor, plyr)
 meta_data <- read_delim("Ass4_MetaAnalysisData.tsv", delim = "\t")
 
 meta_data <- meta_data[!is.na(meta_data$Paper), ]
@@ -47,6 +47,8 @@ meta_data<- escalc(measure = "SMD",
        data = meta_data,
        slab = Paper)
 
+summary(as.factor(meta_data$Language))
+
 meta_data <- meta_data %>% 
   mutate(
     StandardError = sqrt(vi)
@@ -54,6 +56,8 @@ meta_data <- meta_data %>%
   rename(
     EffectSize = yi
   )
+
+nlevels(as.factor(meta_data$Population))
 
 summary(meta_data$EffectSize)
 
@@ -106,55 +110,17 @@ Step 2: Analyse pitch variability in ASD in two new studies for which you have a
 - Also, let's standardize the data, so that they are compatible with our meta-analytic prior (Cohen's d is measured in SDs).
 - Is there any structure in the dataset that we should account for with random/varying effects? How would you implement that? Or, if you don't know how to do bayesian random/varying effects or don't want to bother, is there anything we would need to simplify in the dataset?
 ```{r}
-pitch_data <- read_csv("Ass4_data.csv")
+mega_data <- read_csv("Ass4_data.csv")
 
-summary(as.factor(pitch_data$Language))
+summary(as.factor(mega_data$Language))
 
-pitch_data <- pitch_data %>% 
-  mutate(PitchVariability = scale(Pitch_IQR))
+mega_data <- mega_data %>% 
+  mutate(PitchVar = scale(Pitch_IQR))
 
 ###Checking difference in language
-pitch_data %>% 
+mega_data %>% 
   group_by(Language, Diagnosis) %>% 
-  summarise( iqr_diff = mean(PitchVariability, na.rm=T), n = n())
-#include as fixed effect
-
-
-pitch_model <- bf(
-  PitchVariability ~ 0 + Diagnosis + Language + (1|ID)
-)
-
-get_prior(pitch_model, data = pitch_data)
-summary(as.factor(pitch_data$ID))
-pitch_priors <- c(
-  prior(normal(-0.43, 0.09), class = b),
-  prior(normal(0,.5), class=sigma)
-)
-
-summary(pitch_data$PitchVariability)
-
-pitch_priorcheck <- brm(
-  pitch_model, 
-  prior = pitch_priors,
-  data = pitch_data, 
-  cores = 4,
-  sample_prior = "only"
-)
-
-pp_check(pitch_priorcheck, nsamples=100)
-?pp_check
-###Posterior check
-pitch_brm <- brm(
-  pitch_model, 
-  prior = pitch_priors,
-  data = pitch_data, 
-  cores = 4,
-  sample_prior = T
-)
-
-pp_check(pitch_brm, nsamples=100)
-
-summary(pitch_brm)
+  summarise( iqr_diff = mean(PitchVar, na.rm=T), n = n())
 ```
 
 Step 3: Build a regression model predicting Pitch variability from Diagnosis.
@@ -162,15 +128,258 @@ Step 3: Build a regression model predicting Pitch variability from Diagnosis.
 - how are the parameters of the likelihood distribution distributed? Which predictors should they be conditioned on? Start simple, with Diagnosis only. Add other predictors only if you have the time and energy!
 - use a skeptical/conservative prior for the effects of diagnosis. Remember you'll need to motivate it.
 - Evaluate model quality. Describe and plot the estimates. 
+```{r}
+#### Formula 0: assume difference in language to make NO difference ####
+# Model formula
+mega_f0 <- bf(PitchVar ~ 1 + Diagnosis + (1|ID)) #pitchvar is different across diagnoses and different individuals will show variability
+# Prior 
+get_prior(mega_f0, mega_data, family = gaussian())#prior for beta for diagnosisTD, intercept (average for autism), sd (var for participant), sigma (error expected for model for each datapoint)
+mega_prior0 <- c(
+  prior(normal(0, .1), class = b), #expect small dif, because it is standardized and effect small so sceptical
+  prior(normal(0, .3), class = Intercept), #we expect the average scaled pitchvar for asd to be something close to 0 and .3 so it varies to +1 and -1
+  prior(normal(0, .1), class = sd), #expect individuals to differ as much as the average autism differs from average td person
+  prior(normal(.5, .3), class = sigma) #sd(pitchvar) is 1 because scaled so we put .5 and sd .3 so it goes all the way to 1
+)
+# Prior check 
+mega_m0_pc <- brm(
+  mega_f0,
+  mega_data,
+  family = gaussian(),
+  prior = mega_prior0,
+  sample_prior = "only",
+  chains = 2,
+  cores = 2
+)
+
+pp_check(mega_m0_pc, nsample =100)
+# Model
+mega_m0 <- brm(
+  mega_f0,
+  mega_data,
+  family = gaussian(),
+  prior = mega_prior0,
+  sample_prior = T,
+  chains = 2,
+  cores = 2
+)
+# Posterior predictive checks
+pp_check(mega_m0, nsample =100)
+# Hypothesis testing
+plot(hypothesis(mega_m0, "DiagnosisTD < 0")) #has model learned anything?
+    #posterior seems more certain than prior
+hypothesis(mega_m0, "DiagnosisTD < 0") #"<" based on metaanalysis
+    #6.8 as much evidence that dif is there (not that strong)
+    #-.08 -> dif is small 
+summary(mega_m0)
+    #intercept = .26 (asds expected to be .26), tds .08 lower than that
+    #sigma .7
+#### Formula 1: assume difference in language to make difference ####
+# Model formula
+mega_f1 <- bf(PitchVar ~ 0 + Language + Language:Diagnosis + (1|ID)) #there might be a different baseline in clinical/non-clinical (diagnosis) and this difference might be different in the two languages
+# Prior
+get_prior(mega_f1, mega_data, family = gaussian())
+   #DiagnosisTD = a slope that distinguishes td in danish from asd in danish
+   #Languageus = slope that distinguishes asds in us from asd in danish
+   #DiagnosisTD:Languageus = slope that distinguishes expected difference in effects of diagnosis in danish and us
+# -> because we know about this expected difference, we can specify it in the formula by using 0+ instead of 1+ to say that each language has its own intercept and diagnosis is gonna make a difference -> effect of language by diagnosis
+mega_prior1 <- c(
+  prior(normal(0, .3), class = b, coef = "Languagedk"), 
+    #beta for languagedk, scaled so expect something close to 0 
+  prior(normal(0, .3), class = b, coef = "Languageus"), 
+    #beta for languageus, scaled so expect something close to 0 
+  prior(normal(0, .1), class = b, coef = "Languagedk:DiagnosisTD"),
+    #beta for effect of diagnosis in languagedk
+  prior(normal(0, .1), class = b, coef = "Languageus:DiagnosisTD"),
+    #beta for effect of diagnosis in languagedk
+  prior(normal(0, .1), class = sd), 
+    #sd - expect individuals to differ as much as the average autism differs from average td person
+  prior(normal(.5, .1), class = sigma) 
+    #sigma - sd(pitchvar) is 1 because scaled so we put .5 and sd .3 so it goes all the way to 1
+)
+# Prior check (#pc = prior check)
+mega_m1_pc <- brm(
+  mega_f1,
+  mega_data,
+  family = gaussian(),
+  prior = mega_prior1,
+  sample_prior = "only",
+  chains = 2,
+  cores = 2
+)
+pp_check(mega_m1_pc, nsample =100) #in right area of interest
+# Model
+mega_m1 <- brm(
+  mega_f1,
+  mega_data,
+  family = gaussian(),
+  prior = mega_prior1,
+  sample_prior = T,
+  chains = 2,
+  cores = 2
+)
+# Posterior predictive checks
+pp_check(mega_m1, nsample =100)
+# Hypothesis testing
+hypothesis(mega_m1, "Languagedk:DiagnosisTD < 0") 
+hypothesis(mega_m1, "Languageus:DiagnosisTD < 0") 
+plot(hypothesis(mega_m1, "Languagedk:DiagnosisTD < 0")) #effect of diagnoss in danish
+plot(hypothesis(mega_m1, "Languageus:DiagnosisTD < 0")) #effect of diagnoss in us
+      #we see that the effects are opposite, so they might ahve cancelled each other out in the model above, which is why the effect was not very big
+#is difference in dk language smaller than in us? - is it credible???
+plot(hypothesis(mega_m1, "Languagedk:DiagnosisTD < Languageus:DiagnosisTD"))
+  #prior centered at 0, but posterior negative - effect of danish smaller than us
+hypothesis(mega_m1, "Languagedk:DiagnosisTD < Languageus:DiagnosisTD")
+summary(mega_m1)
+  # opposite directions - remember
+# Comparing models
+mega_m0 <- add_criterion(mega_m0, criterion = "loo", reloo = T)
+mega_m1 <- add_criterion(mega_m1, criterion = "loo")
+loo_model_weights(mega_m0, mega_m1)
+ #if these two are the only possible models, there is ... chance that m1 is better
+```
+
 
 Step 4: Now re-run the model with the meta-analytic prior
 - Evaluate model quality. Describe and plot the estimates. 
+
+```{r}
+mega_prior1_informed <- c(
+  prior(normal(.2, .3), class = b, coef = "Languagedk"), 
+    #beta for languagedk, 
+    #expect distributed around 0 with asd/td above/below (.2 because of .44 below)
+  prior(normal(.2, .3), class = b, coef = "Languageus"), 
+    #beta for languagedk, 
+    #expect distributed around 0 with asd/td above/below (.2 because of .44 below)
+  prior(normal(-.44, .1), class = b, coef = "Languagedk:DiagnosisTD"),
+    #using overall meta-analytic effect (- because td lower than asd)
+  prior(normal(-.44, .1), class = b, coef = "Languageus:DiagnosisTD"),
+    #using overall meta-analytic effect (- because td lower than asd)
+  prior(normal(0, .1), class = sd), 
+    #sd - expect individuals to differ as much as the average autism differs from average td person
+  prior(normal(.32, .1), class = sigma) 
+    #.32 because of heteroginity from meta (error we expect looking at a new study)
+)
+# Prior check (#pc = prior check)
+mega_m1_informed_pc <- brm(
+  mega_f1,
+  mega_data,
+  family = gaussian(),
+  prior = mega_prior1_informed,
+  sample_prior = "only",
+  chains = 2,
+  cores = 2
+)
+pp_check(mega_m1_informed_pc, nsample =100) #looks ok, we know scale is ok
+# Model
+mega_m1_informed <- brm(
+  mega_f1,
+  mega_data,
+  family = gaussian(),
+  prior = mega_prior1_informed,
+  sample_prior = T,
+  chains = 2,
+  cores = 2
+)
+# Posterior predictive checks
+pp_check(mega_m1_informed, nsample =100) 
+# Hypothesis testing
+hypothesis(mega_m1_informed, "Languagedk:DiagnosisTD < 0") 
+hypothesis(mega_m1_informed, "Languageus:DiagnosisTD < 0")
+plot(hypothesis(mega_m1_informed, "Languagedk:DiagnosisTD < 0"))
+   #has not moved much but more confident
+plot(hypothesis(mega_m1_informed, "Languageus:DiagnosisTD < 0"))
+   #learned a lot from data
+#is difference in dk language smaller than in us? - is it credible??
+plot(hypothesis(mega_m1_informed, "Languagedk:DiagnosisTD < Languageus:DiagnosisTD"))
+   #there is an effect of language, danish more negative 
+hypothesis(mega_m1_informed, "Languagedk:DiagnosisTD < Languageus:DiagnosisTD")
+summary(mega_m1_informed)
+#add criterion
+mega_m1_informed <- add_criterion(mega_m1_informed, criterion = "loo")
+```
 
 Step 5: Compare the models
 - Plot priors and posteriors of the diagnosis effect in both models
 - Compare posteriors between the two models
 - Compare the two models (LOO)
 - Discuss how they compare and whether any of them is best.
+
+```{r}
+# Comparing models
+loo_model_weights(mega_m1, mega_m1_informed, reloo=T)
+
+loo_compare(mega_m1, mega_m1_informed)
+
+#plot posterior against prior (#### posterior()-function does it more elegantly) !!!!!!
+hypothesis(mega_m1, "Languagedk:DiagnosisTD < 0")
+hypothesis(mega_m1, "Languageus:DiagnosisTD < 0")
+hypothesis(mega_m1_informed, "Languagedk:DiagnosisTD < 0")
+hypothesis(mega_m1_informed, "Languageus:DiagnosisTD < 0")
+
+mega_samples <- posterior_samples(mega_m1)
+informed_samples <- posterior_samples(mega_m1_informed)
+
+combined_df <- data.frame(dk = c(informed_samples$`b_Languagedk:DiagnosisTD`,
+                                 mega_samples$`b_Languagedk:DiagnosisTD`) ,
+                          us = c(informed_samples$`b_Languageus:DiagnosisTD`,
+                                 mega_samples$`b_Languageus:DiagnosisTD`),
+                          prior = c(informed_samples$`prior_b_Languagedk:DiagnosisTD`,
+                          mega_samples$`prior_b_Languagedk:DiagnosisTD`),
+                          informed = c(rep("informed", 2000), rep("uninformed", 2000))
+                          )
+
+# Plotting
+p_load(ggthemes)
+colnames(combined_df)[4] <- "priors"
+
+mu<- combined_df %>% group_by(priors) %>%
+  summarise(mean = mean(dk))
+
+muus<- combined_df %>% group_by(priors) %>%
+  summarise(mean = mean(us))
+
+
+dk <- ggplot(combined_df) +
+   	geom_density(aes(dk,fill=priors), alpha = .2) +
+    ggtitle("posterior distributions: Danish", subtitle = "languageDK:DiagnosisTD")+
+    xlab("posterior estimate")+
+    geom_vline(data=mu, aes(xintercept=mean, color=priors))+
+    geom_vline(aes(xintercept = 0), linetype = "dashed")+
+    geom_text(aes(x = 0, y = 3, label = "0"), 
+              size=4, angle=0, hjust=1.5)+
+    geom_text(data=mu, mapping=aes(x=mean, y=4, 
+                                   label=paste("Mean Estimate: ",as.character(round(mean,2)), sep = ""), color = priors), 
+              size=4, angle=0, vjust=0, hjust=0.5) +
+    theme_clean()
+
+us <- ggplot(combined_df) +
+   	geom_density(aes(us,fill=priors), alpha = .2) +
+    ggtitle("posterior distributions: American", subtitle = "languageUS:DiagnosisTD")+
+    xlab("posterior estimate")+
+    geom_vline(data=muus, aes(xintercept=mean, color=priors))+
+    geom_vline(aes(xintercept = 0), linetype = "dashed")+
+    geom_text(aes(x = 0, y = 3, label = "0"), 
+              size=4, angle=0, hjust=1.5)+
+    geom_text(data=muus, mapping=aes(x=mean, y=4, 
+                                   label=paste("Mean Estimate: ",as.character(round(mean,2)), sep = ""), color = priors), 
+              size=4, angle=0, vjust=0, hjust=0.5) +
+    theme_clean()
+
+
+priorplot <- ggplot(combined_df) +
+   	geom_density(aes(prior,fill=priors), alpha = .2) +
+    ggtitle("Priors")+
+    xlab("Prior Estimates")+
+    geom_vline(aes(xintercept = 0), linetype = "dashed")+
+    geom_text(aes(x = 0, y = 3, label = "0"), 
+              size=4, angle=0, hjust=1.5)+
+    theme_clean()
+
+p_load(gridExtra)
+grid.arrange(priorplot)
+
+grid.arrange(dk, us, ncol=1,nrow = 2)
+```
 
 Step 6: Prepare a nice write up of the analysis and answer the questions at the top.
 
